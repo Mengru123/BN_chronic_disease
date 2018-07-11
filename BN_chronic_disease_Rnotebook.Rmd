@@ -1,0 +1,173 @@
+---
+title: "Analyze PopHR Data using BN Model"
+author: "Mengru Yuan"
+date: "March 8, 2018"
+output:
+  pdf_document: default
+  word_document: default
+  html_notebook: default
+  html_document:
+    df_print: paged
+---
+
+## Summary 
+
+Applied to pophr data; 8 chronic diseases were investigated (ami, ihd, hypertension, copd, stroke,chf, diabetes, asthma); only using incidence in this initial analysis. Two datasets were used for BN structure learning  
+dataset - 1: aggreated data at clsc level, and only patient got diagnosis in 2014. (data as continuous data)  
+dataset - 2: individual data, and only patient got diagnosis in 2014. (data as categorical data)  
+  
+  for each dataset, two learning algorithms were used:   
+  1. constrain-based: iamb  
+  2. score-based: hc (Hill-Climbing)
+
+### dataset-1
+```{r, input data for dataset 1, echo=FALSE}
+library(dplyr)
+library(tidyr)
+library(bnlearn)
+library(DiagrammeR)
+library(Rgraphviz)
+
+setwd("C:/Users/myuan/Google Drive/1. Practicum/3. Notes/9. BN/3. Pophr")
+indicator.table<-read.table(file = "Disease incidence bn/pophr_indicators_for R.csv", head=TRUE, sep = ',')
+#only deal with the data in 2014 first
+indicator.14<- subset(indicator.table, year==2014)
+
+stroke.all<-read.csv("Disease incidence bn/Incidence Rate of Stroke by  CLSC_data.csv", header = TRUE, sep=',')
+stroke.14<-stroke.all[stroke.all$ï..Year == 2014, c(3,4)]
+names(stroke.14) <-c("clsc", "stroke")
+rm(stroke.all)
+
+all.dis<- indicator.14  %>%
+    group_by(disease, clsc)  %>%
+    summarise(all.num = sum(num), all.denom = sum(denom))
+
+#all.dis.w.r: all disease in 2014, wide shape and in incidence per 1000
+all.dis.r<- all.dis %>%
+    mutate(incidence= all.num/all.denom *1000) %>%
+    select(clsc, disease, incidence) %>%
+    spread(disease,incidence)
+rm(indicator.14)
+
+# final dataset 
+dis_clsc_14<-merge(all.dis.r, stroke.14, by="clsc")
+dis_clsc_14<- dis_clsc_14[, !colnames(dis_clsc_14) %in% "clsc"]
+dis_clsc_14<-dis_clsc_14[complete.cases(dis_clsc_14),]
+rm(stroke.14); rm(all.dis)
+```
+
+
+```{r plot dataset1 to see whether is normal, echo=TRUE}
+#summary.data.frame(dis_clsc_14);dim(dis_clsc_14) # to check whether data are normally-distributed 
+#plot(dis_clsc_14)
+par(mfrow= c(2,4))
+hist(dis_clsc_14$ami); hist(dis_clsc_14$asthma);hist(dis_clsc_14$chf); hist(dis_clsc_14$copd)
+hist(dis_clsc_14$diabetes); hist(dis_clsc_14$hypertension);hist(dis_clsc_14$ihd); hist(dis_clsc_14$stroke)
+
+```
+
+```{r BN for dataset1}
+dis.clsc.bn=iamb(dis_clsc_14, debug = FALSE)  # constrain-based learning 
+dis.clsc.bn2=hc(dis_clsc_14, debug = FALSE)   # score-based learning 
+all.equal(dis.clsc.bn, dis.clsc.bn2)
+par(mfrow= c(1,1))
+plot(dis.clsc.bn); plot(dis.clsc.bn2)
+arc.strength(dis.clsc.bn2, dis_clsc_14, debug = TRUE) 
+```
+
+The **strength** is measured by the score gain/loss which would be caused by the arc's removal. In other words, it is the difference between the score of the network including the arc and the score of the network in which the arc is not present. Negative values correspond to decreases in the network score and positive values correspond to increases in the network score (the stronger the relationship, the more negative the difference)
+
+**Results:My interpretation**  
+1. Compare the two strcture learning method:  
+    i skeletons are similar  
+    ii using the iamb, the BN have two more arcs: ihd -> chf, copd->chf
+    iii iamb has less directions  
+2. The arc is added if there is an negative value to the graph, but the results showed several arcs don't have strong strength, such as:   
+    chf-->asthme  
+    stroke -->diabetes  
+    copd -->chf  
+
+
+### Dataset-2
+
+```{r prepare dataset -2, echo=TRUE}
+setwd("C:/Users/myuan/Google Drive/1. Practicum/3. Notes/9. BN/3. Pophr")
+dis.indiv<-read.table(file = 'Disease_individual level_bn/SELECT___from_discohort14.tsv', sep = '\t', header = TRUE)
+names(dis.indiv)<- c("year", "id", "diabetes", "ami","amputation","asthma","chf","copd", "epilepsy",
+                     "hiv", "ht", "hypertension", "ihd", "stroke")
+summary(is.na(dis.indiv$year)) ;summary(is.na(dis.indiv$id))
+
+# the 0, 1 will be treated as continous variables if don't factorize it
+dis.indiv.cp<-dis.indiv
+for (i in 3:ncol(dis.indiv.cp)) {
+    dis.indiv.cp[,i]<-ifelse(is.na(dis.indiv.cp[,i]), 0, 1)
+}
+dis.indiv.cp<-dis.indiv.cp[,colnames(dis.indiv.cp) %in% c("ami", "asthma", "chf", "copd","diabetes", "hypertension", "ihd","stroke")]
+
+# create 0, 1 as factor varaibles 
+dis_indiv_14<- dis.indiv.cp
+for (i in 1:ncol(dis_indiv_14)) {
+    dis_indiv_14[,i] <- factor(dis_indiv_14[,i])
+}
+levels(dis_indiv_14$stroke)
+rm(dis.indiv); rm(dis.indiv.cp)
+```
+
+```{r BN for dataset-3}
+indiv.bn=iamb(dis_indiv_14)
+indiv.bn2=hc(dis_indiv_14)
+all.equal(indiv.bn, indiv.bn2)
+par(mfrow= c(1,1))
+plot(indiv.bn);plot(indiv.bn2)
+arc.strength(indiv.bn2, dis_indiv_14)
+strength.indiv = arc.strength(indiv.bn2, dis_indiv_14)
+strength.plot(indiv.bn2, strength.indiv, threshold = -1500, layout= "circo" )
+```
+
+**Results: My interpretation  **  
+1. compare bn2 and bn3, no edge is added, but the direction of the arcs are quite different   
+2. the skeleton is stable using the two learning algorithms, given the individual dataset, but the directions need more expert validation
+
+```{r BN from PopHR causal graph, echo=FALSE}
+pophr_cg = model2network("[chf|copd:diabetes:hypertension:ami][diabetes][copd][ihd][asthma][ami|hypertension:diabetes][hypertension|diabetes][stroke|hypertension:diabetes]")
+```
+
+```{r plot pophr causal graph}
+plot(pophr_cg)  # plot the causal graph in PopHR 
+```
+### add known relationships as the prior information to the structure learning 
+```{r, add ami <->ihd to blacklist for dis.clsc.bn2}
+# we know that ihd and ami are not causal related but they are easily misdiagnosed from each other, therefore,
+# add ami <->ihd to the blacklist to BNs constructed from dataset-1
+blacklist= data.frame(from=c( "ami", "ihd"), to =c( "ihd", "ami"))
+dis.clsc.bn2.modf= hc(dis_clsc_14, blacklist = blacklist)
+plot(dis.clsc.bn2.modf)
+plot(dis.clsc.bn2)
+arc.strength(dis.clsc.bn2, dis_clsc_14)
+
+```
+
+```{r add blacklist for dis.clsc.bn2}
+# add ami <->ihd to the blacklist to BNs constructed from dataset-3
+indiv.bn2.modf=hc(dis_indiv_14, blacklist = blacklist)
+plot(indiv.bn2.modf)
+plot(indiv.bn2)
+strength.plot(indiv.bn2, strength.indiv, threshold = -500, layout= "circo" )
+strength.indiv.modf = arc.strength(indiv.bn2.modf, dis_indiv_14)
+strength.plot(indiv.bn2.modf, strength.indiv.modf, threshold = -500, layout= "circo" )
+```
+
+```{r, BF, echo=FALSE}
+# compare the BN factors
+BF(indiv.bn2, pophr_cg, dis_indiv_14, score = "bde", log = TRUE)
+BF(indiv.bn2.modf, pophr_cg, dis_indiv_14, score = "bde", log = TRUE)
+
+BF(indiv.bn2,dis.clsc.bn2, dis_indiv_14, log = TRUE)
+BF(dis.clsc.bn2,pophr_cg, dis_clsc_14, log = TRUE)
+BF(dis.clsc.bn2.modf,pophr_cg, dis_clsc_14, log = TRUE)
+
+
+
+#fitted = bn.fit(indiv.bn3, dis.indiv.cp)
+```
+
